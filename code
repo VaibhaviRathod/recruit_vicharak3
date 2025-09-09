@@ -1,0 +1,127 @@
+module idct_8x8(
+    input wire clk,
+    input wire reset,
+    input wire start,
+    input wire signed [15:0] dct_in [0:7][0:7], 
+    output reg done,
+    output reg [7:0] pixel_out [0:7][0:7] 
+);
+
+    localparam signed [15:0]
+        C1 = 16069,  // cos(pi/16)*sqrt(2)*16384
+        C2 = 15137,  // cos(2pi/16)*sqrt(2)*16384
+        C3 = 13623,  // cos(3pi/16)*sqrt(2)*16384
+        C5 = 9102,   // cos(5pi/16)*sqrt(2)*16384
+        C6 = 6270,   // cos(6pi/16)*sqrt(2)*16384
+        C7 = 3196;   // cos(7pi/16)*sqrt(2)*16384
+
+    reg signed [31:0] row_result [0:7][0:7];
+    reg signed [31:0] col_result [0:7][0:7];
+
+    integer i, j;
+
+    typedef enum reg [1:0] {IDLE, ROW_PROC, COL_PROC, DONE} state_t;
+    reg [1:0] state;
+
+    task row_idct(input signed [15:0] row_in [0:7], output signed [31:0] row_out [0:7]);
+        reg signed [31:0] tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
+        reg signed [31:0] z1, z2, z3, z4, z5;
+        begin
+            
+            z1 = (row_in[7] * C1) - (row_in[5] * C3) + (row_in[3] * C5) - (row_in[1] * C7);
+            z2 = (row_in[7] * C7) + (row_in[5] * C5) - (row_in[3] * C3) - (row_in[1] * C1);
+        
+            tmp0 = (row_in[0] + row_in[4]) * 16384;
+            tmp1 = (row_in[0] - row_in[4]) * 16384;
+            tmp2 = (row_in[2] * C6) - (row_in[6] * C2);
+            tmp3 = (row_in[2] * C2) + (row_in[6] * C6);
+          
+            row_out[0] = (tmp0 + tmp3 + z2) >> 14;
+            row_out[1] = (tmp1 + tmp2 + z1) >> 14;
+            row_out[2] = (tmp1 - tmp2 - z1) >> 14;
+            row_out[3] = (tmp0 - tmp3 - z2) >> 14;
+            row_out[4] = (tmp0 - tmp3 + z2) >> 14;
+            row_out[5] = (tmp1 - tmp2 + z1) >> 14;
+            row_out[6] = (tmp1 + tmp2 - z1) >> 14;
+            row_out[7] = (tmp0 + tmp3 - z2) >> 14;
+        end
+    endtask
+
+    task col_idct(input signed [31:0] col_in [0:7], output signed [31:0] col_out [0:7]);
+        reg signed [31:0] tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
+        reg signed [31:0] z1, z2, z3, z4, z5;
+        begin
+
+            z1 = (col_in[7] * C1) - (col_in[5] * C3) + (col_in[3] * C5) - (col_in[1] * C7);
+            z2 = (col_in[7] * C7) + (col_in[5] * C5) - (col_in[3] * C3) - (col_in[1] * C1);
+            tmp0 = (col_in[0] + col_in[4]) * 16384;
+            tmp1 = (col_in[0] - col_in[4]) * 16384;
+            tmp2 = (col_in[2] * C6) - (col_in[6] * C2);
+            tmp3 = (col_in[2] * C2) + (col_in[6] * C6);
+
+            col_out[0] = (tmp0 + tmp3 + z2) >> 14;
+            col_out[1] = (tmp1 + tmp2 + z1) >> 14;
+            col_out[2] = (tmp1 - tmp2 - z1) >> 14;
+            col_out[3] = (tmp0 - tmp3 - z2) >> 14;
+            col_out[4] = (tmp0 - tmp3 + z2) >> 14;
+            col_out[5] = (tmp1 - tmp2 + z1) >> 14;
+            col_out[6] = (tmp1 + tmp2 - z1) >> 14;
+            col_out[7] = (tmp0 + tmp3 - z2) >> 14;
+        end
+    endtask
+
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            done <= 0;
+            state <= IDLE;
+        end else begin
+            case(state)
+                IDLE: begin
+                    done <= 0;
+                    if (start) begin
+                        for (i = 0; i < 8; i = i + 1) begin
+                            row_idct(dct_in[i], row_result[i]);
+                        end
+                        state <= ROW_PROC;
+                    end
+                end
+                ROW_PROC: begin
+
+                    for (j = 0; j < 8; j = j + 1) begin
+                        reg signed [31:0] col_in [0:7];
+                        reg signed [31:0] col_out [0:7];
+                        for (i = 0; i < 8; i = i + 1) begin
+                            col_in[i] = row_result[i][j];
+                        end
+                        col_idct(col_in, col_out);
+                        for (i = 0; i < 8; i = i + 1) begin
+                            col_result[i][j] = col_out[i];
+                        end
+                    end
+                    state <= COL_PROC;
+                end
+                COL_PROC: begin
+                    
+                    for (i = 0; i < 8; i = i + 1) begin
+                        for (j = 0; j < 8; j = j + 1) begin
+                           
+                            integer pixel_val;
+                            pixel_val = (col_result[i][j] >> 3) + 128;
+                            if (pixel_val < 0) pixel_val = 0;
+                            else if (pixel_val > 255) pixel_val = 255;
+                            pixel_out[i][j] <= pixel_val[7:0];
+                        end
+                    end
+                    done <= 1;
+                    state <= DONE;
+                end
+                DONE: begin
+                    
+                    if (!start) state <= IDLE;
+                end
+            endcase
+        end
+    end
+
+endmodule
